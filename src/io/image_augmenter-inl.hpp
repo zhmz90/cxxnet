@@ -103,20 +103,41 @@ class ImageAugmenter {
     M.at<float>(0, 2) = (new_width - ori_center_width) / 2;
     M.at<float>(1, 2) = (new_height - ori_center_height) / 2;
     cv::warpAffine(src, temp, M, cv::Size(new_width, new_height),
-                     cv::INTER_CUBIC,
+                     cv::INTER_LINEAR,
                      cv::BORDER_CONSTANT,
                      cv::Scalar(fill_value_, fill_value_, fill_value_));
     cv::Mat res = temp;
-    mshadow::index_t y = res.rows - shape_[2];
-    mshadow::index_t x = res.cols - shape_[1];
-    if (rand_crop_ != 0) {
-      y = prnd->NextUInt32(y + 1);
-      x = prnd->NextUInt32(x + 1);
-    } else {
-      y /= 2; x /= 2;
+    if (max_crop_size_ != -1 || min_crop_size_ != -1){
+      utils::Check(res.cols >= max_crop_size_ && res.rows >= max_crop_size_&&max_crop_size_ >= min_crop_size_,
+        "input image size smaller than max_crop_size");
+      mshadow::index_t rand_crop_size = prnd->NextUInt32(max_crop_size_-min_crop_size_+1)+min_crop_size_;
+      mshadow::index_t y = res.rows - rand_crop_size;
+      mshadow::index_t x = res.cols - rand_crop_size;
+      if (rand_crop_ != 0) {
+        y = prnd->NextUInt32(y + 1);
+        x = prnd->NextUInt32(x + 1);
+      }
+      else {
+        y /= 2; x /= 2;
+      }
+      cv::Rect roi(x, y, rand_crop_size, rand_crop_size);
+      cv::resize(res(roi), res, cv::Size(shape_[1], shape_[2]));
     }
-    cv::Rect roi(x, y, shape_[1], shape_[2]);
-    res = res(roi);
+    else{
+      utils::Check(static_cast<mshadow::index_t>(res.cols) >= shape_[1] && static_cast<mshadow::index_t>(res.rows) >= shape_[2],
+        "input image size smaller than input shape");
+      mshadow::index_t y = res.rows - shape_[2];
+      mshadow::index_t x = res.cols - shape_[1];
+      if (rand_crop_ != 0) {
+        y = prnd->NextUInt32(y + 1);
+        x = prnd->NextUInt32(x + 1);
+      }
+      else {
+        y /= 2; x /= 2;
+      }
+      cv::Rect roi(x, y, shape_[1], shape_[2]);
+      res = res(roi);
+    }
     return res;
   }
   /*!
@@ -149,6 +170,24 @@ class ImageAugmenter {
       }
     }
     return tmpres;
+  }
+
+  virtual void Process(unsigned char *dptr, size_t sz,
+                       mshadow::TensorContainer<cpu, 3> *p_data,
+                       utils::RandomSampler *prnd) {
+    cv::Mat buf(1, sz, CV_8U, dptr);
+    cv::Mat res = cv::imdecode(buf, 1);
+    res = this->Process(res, prnd);
+    p_data->Resize(mshadow::Shape3(3, res.rows, res.cols));
+    for (index_t i = 0; i < p_data->size(1); ++i) {
+      for (index_t j = 0; j < p_data->size(2); ++j) {
+        cv::Vec3b bgr = res.at<cv::Vec3b>(i, j);
+        (*p_data)[0][i][j] = bgr[2];
+        (*p_data)[1][i][j] = bgr[1];
+        (*p_data)[2][i][j] = bgr[0];
+      }
+    }
+    res.release();
   }
 
  private:
